@@ -1,0 +1,89 @@
+---
+
+- name: "Create Dockerfile"
+  hosts: localhost
+  tasks:
+
+    - name: "Create Dockerfile from example"
+      template:
+        src: Dockerfile_example
+        dest: Dockerfile
+
+    - name: "Add chmod to SH file"
+      shell: "chmod +x build.sh"
+
+    - name: "Move Jar file"
+      shell: "mv ../target/{{ app_name }}.jar {{ app_name }}.jar"
+
+    - name: "Build Docker Images"
+      shell: "./build.sh {{ counter }}-{{ version }} {{ app_name }}"
+
+    - name: "Move Jar file"
+      shell: "mv {{ app_name }}.jar ../target/{{ app_name }}.jar"
+
+- name: "Install New Version {{ app_name }}"
+  hosts: "{{ counter }}-app"
+
+  tasks:
+
+    - name: Get random port from file
+      include_vars:
+        file: port.yml
+
+    - name: Remove Old Docker App, maybe previous build has failure?
+      shell: "docker rm {{ app_name }}_old"
+      ignore_errors: yes
+
+    - name: Stop Old Docker App
+      shell: "docker stop {{ app_name }}"
+      when: scheduler | bool
+      ignore_errors: yes
+
+    - name: Rename Docker App
+      shell: "docker rename {{ app_name }} {{ app_name }}_old"
+      ignore_errors: yes
+
+    - name: Start New Version
+      shell: "docker run -d --name {{ app_name }} -e PROFILE={{ counter }} -v /mnt/data:/mnt/data/ --hostname {{ app_name }} -p {{ port }}:8080 --restart always registry.proitr.ru/dots-java/{{ app_name }}:{{ counter }}-{{ version }}"
+
+    - name: "Await to start {{ app_name }}"
+      shell: >
+        (for i in {1..300}; do
+             if curl -s -o /dev/null -w "%{http_code}" http://"{{ counter }}"-app:"{{ port }}"/module/"{{ app_name }}"/api/actuator -m 2  | grep 200 > /dev/null; then
+                 exit 0;
+             else
+                 sleep 1;
+             fi
+         done;
+         exit 1)
+      changed_when: false
+      ignore_errors: yes
+      register: start
+      when: not scheduler | bool
+
+    - name: Return old Version App
+      shell: "docker stop {{ app_name }} && docker rm {{ app_name }} && docker rename {{ app_name }}_old {{ app_name }} && exit 1"
+      when: not scheduler | bool and start is failed
+      #ignore_errors: yes
+
+    - name: Remove Old Docker App
+      shell: "docker rm {{ app_name }}_old"
+      when: scheduler | bool
+      ignore_errors: yes
+
+
+- name: "Delete old image {{ app_name }}"
+  hosts: "{{ counter }}-app"
+
+  tasks:
+
+    - name: Stop Old Docker App
+      shell: "docker stop {{ app_name }}_old"
+      when: not scheduler | bool
+      ignore_errors: yes
+
+
+    - name: Remove Old Docker App
+      shell: "docker rm {{ app_name }}_old"
+      when: not scheduler | bool
+      ignore_errors: yes
